@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <boost/asio.hpp>
+#include "aio_server/database.hpp" 
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
@@ -16,4 +17,5 @@ private:
 
     boost::asio::ip::tcp::socket socket_;
     std::array<char, 1024> buffer_;
+    std::unique_ptr<Database> db_;
 };

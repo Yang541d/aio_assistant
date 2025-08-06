@@ -1,12 +1,16 @@
+#include "aio_server/database.hpp"
 #include "aio_server/server.hpp" 
 #include "aio_server/session.hpp"
 #include <iostream>
 #include <memory>
 #include <utility>
-
 Server::Server(boost::asio::io_context& ioc, unsigned short port)
     : io_context_(ioc),
       acceptor_(ioc, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)) {
+    // 创建数据库实例，数据库文件会生成在build目录下
+    db_ = std::make_unique<Database>("aio_assistant_data.db");
+    // 记录服务器启动事件
+    db_->log_system_event("Server Started.");
 }
 
 void Server::run() {
