@@ -11,7 +11,13 @@ if(Boost_FOUND)
 endif()
 
 
-add_executable(server_app main.cpp)
+add_executable(server_app 
+    src/main.cpp 
+    src/server.cpp 
+    src/session.cpp
+)
+
+target_include_directories(server_app PRIVATE include)
 
 if(Boost_FOUND)
     target_link_libraries(server_app PRIVATE Boost::system)
