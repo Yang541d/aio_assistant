@@ -3,6 +3,8 @@
 #include <memory>
 #include <boost/asio.hpp>
 #include "aio_server/database.hpp" 
+#include <nlohmann/json.hpp> 
+
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
@@ -13,8 +15,7 @@ public:
 
 private:
     void do_read();
-    void do_write(std::size_t length);
-
+    void handle_request(const nlohmann::json& request);
     boost::asio::ip::tcp::socket socket_;
     std::array<char, 1024> buffer_;
     std::unique_ptr<Database> db_;
