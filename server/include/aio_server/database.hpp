@@ -2,7 +2,7 @@
 
 #include <string>
 #include <memory>
-
+#include <nlohmann/json.hpp>
 namespace SQLite { class Database; }
 
 class Database {
@@ -12,6 +12,8 @@ public:
 
     // 记录一条系统事件
     void log_system_event(const std::string& event_message);
+    // 记录一次客户端请求的方法
+    void log_client_request(const nlohmann::json& request);
 
 private:
     // 使用智能指针来管理数据库对象，确保资源被正确释放

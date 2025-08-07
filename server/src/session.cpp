@@ -1,12 +1,13 @@
 #include "aio_server/session.hpp" 
 #include <iostream>
 #include <utility>
+#include <istream>
 using json = nlohmann::json;
 // 构造函数的实现
-Session::Session(boost::asio::ip::tcp::socket socket)
-    : socket_(std::move(socket)) {
+Session::Session(boost::asio::ip::tcp::socket socket, Database& db)
+    : socket_(std::move(socket)),
+      db_(db) { // 初始化db_成员
 }
-
 void Session::start() {
     std::cout << "会话开始，准备从客户端读取数据..." << std::endl;
     do_read();
@@ -14,31 +15,30 @@ void Session::start() {
 
 void Session::do_read() {
     auto self = shared_from_this();
-    socket_.async_read_some(boost::asio::buffer(buffer_),
+
+    boost::asio::async_read_until(socket_, buffer_, '\n',
         [this, self](const boost::system::error_code& ec, std::size_t length) {
             if (!ec) {
-                try {
-                    // 将收到的数据转换成一个json对象
-                    // 注意：buffer_是一个字符数组，但可能不包含字符串结束符'\0'
-                    // 所以我们用(buffer_.data(), length)来构造一个只包含有效数据的视图
-                    json request = json::parse(buffer_.data(), buffer_.data() + length);
+                // 从streambuf中提取一行完整的数据
+                std::istream is(&buffer_);
+                std::string line;
+                std::getline(is, line); // getline会自动处理换行符
 
-                    std::cout << "成功解析JSON: " << request.dump(4) << std::endl; // dump(4)是格式化打印
-
-                    // 调用新的处理函数
-                    handle_request(request);
-
-                } catch (const json::parse_error& e) {
-                    std::cerr << "JSON解析错误: " << e.what() << std::endl;
-                    // TODO: 可以向客户端发送一个错误信息
+                // 只在line非空时才尝试解析
+                if (!line.empty()) {
+                    try {
+                        nlohmann::json request = nlohmann::json::parse(line);
+                        std::cout << "成功解析JSON: " << request.dump(4) << std::endl;
+                        handle_request(request);
+                    } catch (const nlohmann::json::parse_error& e) {
+                        std::cerr << "JSON解析错误: " << e.what() << std::endl;
+                    }
                 }
 
-                // 无论成功与否，都继续准备下一次读取
+                // 继续准备下一次读取
                 do_read();
 
             } else {
-                // 当客户端断开连接时，会触发一个错误，通常是 "End of file"
-                // 这不是一个严重错误，只是表示会话正常结束
                 if (ec == boost::asio::error::eof) {
                      std::cout << "客户端断开连接。" << std::endl;
                 } else {
@@ -49,6 +49,7 @@ void Session::do_read() {
 }
 
 void Session::handle_request(const json& request) {
+    db_.log_client_request(request);
     // 检查JSON中是否存在"type"字段
     if (request.contains("type") && request["type"].is_string()) {
         std::string request_type = request["type"];

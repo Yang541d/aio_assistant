@@ -24,7 +24,7 @@ void Server::do_accept() {
         [this](const boost::system::error_code& ec, boost::asio::ip::tcp::socket socket) {
             if (!ec) {
                 std::cout << "新客户端连接成功！创建会话处理..." << std::endl;
-                std::make_shared<Session>(std::move(socket))->start();
+                std::make_shared<Session>(std::move(socket), *db_)->start();
             } else {
                 std::cerr << "接受连接时发生错误: " << ec.message() << std::endl;
             }
