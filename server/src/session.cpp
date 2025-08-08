@@ -54,6 +54,26 @@ void Session::handle_request(const json& request) {
     if (request.contains("type") && request["type"].is_string()) {
         std::string request_type = request["type"];
 
+        // handle_spider_request
+         if (request_type == "crawl_scholar") {
+            if (request.contains("payload") && request["payload"].contains("name")) {
+                std::string name = request["payload"]["name"];
+                std::cout << "收到爬取任务，目标: " << name << ". 开始调用Python服务..." << std::endl;
+
+                // 发起HTTP GET请求到我们的Python服务
+                cpr::Response r = cpr::Get(cpr::Url{"http://127.0.0.1:5001/crawl"},
+                                           cpr::Parameters{{"name", name}});
+
+                std::cout << "Python服务调用完成，返回状态码: " << r.status_code << std::endl;
+                if (r.status_code == 200) {
+                    std::cout << "爬取结果: " << r.text << std::endl;
+                    // TODO: 将r.text(一个JSON字符串)解析并存入数据库
+                } else {
+                    std::cout << "爬虫服务调用失败: " << r.error.message << std::endl;
+                }
+            }
+        } 
+
         if (request_type == "echo") {
             std::cout << "收到一个echo请求。" << std::endl;
             // 在这里我们可以实现一个JSON版本的echo，但暂时先只打印

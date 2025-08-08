@@ -22,6 +22,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+# cpr
+FetchContent_Declare(
+    cpr
+    GIT_REPOSITORY https://github.com/libcpr/cpr.git
+    GIT_TAG        1.10.5 # 使用一个稳定版本
+)
+FetchContent_MakeAvailable(cpr)
 # Boost
 find_package(Boost 1.71.0 REQUIRED COMPONENTS system)
 if(NOT Boost_FOUND)
@@ -48,4 +55,6 @@ target_link_libraries(server_app
     PRIVATE 
     Boost::system 
     SQLiteCpp
+    cpr::cpr      
+    CURL::libcurl 
 )
