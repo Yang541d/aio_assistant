@@ -4,6 +4,7 @@ project(AioServer)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# --- 引入第三方依赖 ---
 include(FetchContent)
 
 # SQLiteCpp
@@ -22,20 +23,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-# cpr
+# cpr (C++ Requests)
 FetchContent_Declare(
     cpr
     GIT_REPOSITORY https://github.com/libcpr/cpr.git
-    GIT_TAG        1.10.5 # 使用一个稳定版本
+    GIT_TAG        1.10.5
 )
 FetchContent_MakeAvailable(cpr)
-# Boost
-find_package(Boost 1.71.0 REQUIRED COMPONENTS system)
-if(NOT Boost_FOUND)
-    message(FATAL_ERROR "Boost not found")
-endif()
 
-# Executable
+# --- 寻找系统库 ---
+# 寻找Boost system组件
+find_package(Boost 1.71.0 REQUIRED COMPONENTS system)
+find_package(CURL REQUIRED)
+
+# --- 定义 server_app 目标 ---
 add_executable(server_app 
     src/main.cpp 
     src/server.cpp 
@@ -43,18 +44,34 @@ add_executable(server_app
     src/database.cpp 
 )
 
-# Include dirs
+# 为 server_app 配置包含目录
 target_include_directories(server_app 
     PRIVATE 
-    ${PROJECT_SOURCE_DIR}/include
+    include # 使用简洁的相对路径
     ${nlohmann_json_SOURCE_DIR}/include
 )
 
-# Link libraries
+# 为 server_app 链接库
 target_link_libraries(server_app 
     PRIVATE 
     Boost::system 
     SQLiteCpp
     cpr::cpr      
     CURL::libcurl 
+)
+
+# --- 定义 http_hello_server 目标 ---
+add_executable(http_hello_server src/http_server_main.cpp)
+
+# 为 http_hello_server 配置包含目录
+target_include_directories(http_hello_server
+    PRIVATE 
+    include
+    ${Boost_INCLUDE_DIRS}
+)
+
+# 为 http_hello_server 链接库
+target_link_libraries(http_hello_server 
+    PRIVATE 
+    Boost::system
 )
