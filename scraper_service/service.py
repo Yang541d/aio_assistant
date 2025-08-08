@@ -4,7 +4,6 @@ import httpx
 from typing import Optional, List, Dict, Any
 
 AMINER_API = "https://searchtest.aminer.cn/aminer-search/search/personV2"
-
 def _aminer_search_api(name: str, organization: Optional[str]) -> tuple[str, dict, dict, str, dict | None]:
     """把浏览器抓到的网络包转成可复用的请求配置。"""
     # 环境变量读取 token（不要把 token 写死进代码/仓库）
@@ -71,77 +70,44 @@ def _aminer_search_api(name: str, organization: Optional[str]) -> tuple[str, dic
 
 
 class ScraperService:
-    # ……保留你已有的 crawl_list / crawl_details 不动……
+    DEFAULT_AVATAR_URL = "https://static.aminer.cn/default/default.jpg"
 
     def crawl_list_fast(self, name: str, organization: Optional[str] = None) -> List[Dict[str, Any]]:
+        # 1) 正确取到请求配置
         url, params, headers, method, body = _aminer_search_api(name, organization)
+
+        # 2) 先发请求拿 JSON
         with httpx.Client(timeout=20) as client:
             r = client.post(url, params=params, headers=headers, json=body)
             r.raise_for_status()
-            data = r.json()
+            resp = r.json()
+
+        # 3) 安全地取到 hitList
+        data_layer = resp.get("data") if isinstance(resp, dict) else None
+        hit_list = data_layer.get("hitList") if isinstance(data_layer, dict) else []
+        if not isinstance(hit_list, list):
+            return [{"count": 0, "items": []}]
 
         people = []
-        data_layer = data.get("data") if isinstance(data, dict) else None
-        hit_list = data_layer.get("hitList") if isinstance(data_layer, dict) else None
-        if not isinstance(hit_list, list):
-            # 兜底：返回结构预览，便于继续定位
-            return [{
-                "top_keys": list(data.keys()) if isinstance(data, dict) else "not-a-dict",
-                "data_keys": list(data_layer.keys()) if isinstance(data_layer, dict) else "no-data-dict",
-                "note": "hitList not found or not a list"
-            }]
+        for item in hit_list:
+            # avatar 可能是完整URL或相对路径，做下兜底
+            avatar = item.get("avatar")
+            if avatar and avatar.startswith("http"):
+                avatar_url = avatar
+            elif avatar:
+                avatar_url = f"https://static.aminer.cn/upload/avatar/{avatar}"
+            else:
+                avatar_url = self.DEFAULT_AVATAR_URL  # 4) 正确引用类属性
 
-        def g(o, *path):
-            cur = o
-            for k in path:
-                if isinstance(cur, dict) and k in cur:
-                    cur = cur[k]
-                else:
-                    return None
-            return cur
-
-        def pick_name(p):
-            return (
-                g(p, "name")
-                or g(p, "name_zh")
-                or g(p, "nameZh")
-                or g(p, "profile", "name")
-                or g(p, "profile", "name_zh")
-            )
-
-        def pick_org(p):
-            return (
-                g(p, "org")
-                or g(p, "affiliation")
-                or g(p, "organization")
-                or g(p, "profile", "org")
-            )
-
-        def pick_avatar(p):
-            return (
-                g(p, "avatar")
-                or g(p, "avatar_url")
-                or g(p, "avatarUrl")
-                or g(p, "profile", "avatar")
-            )
-
-        def pick_id(p):
-            return g(p, "id") or g(p, "pid") or g(p, "_id")
-
-        for p in hit_list[:5]:  # 只取前 5 条，和页面一致
-            pid = pick_id(p)
-            profile_url = f"https://www.aminer.cn/profile/{pid}" if pid else None
             people.append({
-                "id": pid,
-                "name": pick_name(p),
-                "organization": pick_org(p),
-                "avatar_url": pick_avatar(p),
-                "profile_url": profile_url,
-                "raw_keys": list(p.keys()) if isinstance(p, dict) else None  # 便于我们继续精确化
+                "id": item.get("id"),
+                "name": item.get("nameZh") or item.get("name"),
+                "organization": item.get("orgZh") or item.get("org"),
+                "avatar_url": avatar_url,
+                "profile_url": f"https://www.aminer.cn/profile/{item.get('id')}"
             })
 
-        return [{
-            "count": len(hit_list),
-            "items": people
-        }]
+        return [{"count": len(people), "items": people}]
+
+
 
