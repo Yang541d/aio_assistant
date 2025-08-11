@@ -4,3 +4,4 @@ server_app
 client_app
 .vscode/
 *.swp
+.venv
