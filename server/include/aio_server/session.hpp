@@ -1,25 +1,28 @@
 #pragma once
 
-#include <memory>
+#include "aio_server/database.hpp"
 #include <boost/asio.hpp>
-#include "aio_server/database.hpp" 
-#include <nlohmann/json.hpp> 
-#include <cpr/cpr.h>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <memory>
+#include <nlohmann/json.hpp>
 
-
+namespace beast = boost::beast;
+namespace http = beast::http;
+namespace net = boost::asio;
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    // 构造函数，接收一个已经建立的socket
-    Session(boost::asio::ip::tcp::socket socket, Database& db);
-    // 公共的启动函数
+    Session(net::ip::tcp::socket&& socket, Database& db);
     void start();
 
 private:
     void do_read();
-    void handle_request(const nlohmann::json& request);
-    boost::asio::ip::tcp::socket socket_;
-    boost::asio::streambuf buffer_;
-    // 保存Database的引用
+    void handle_request(http::request<http::string_body>&& req);
+    void send_response(http::response<http::string_body>&& res);
+
+    beast::tcp_stream stream_;
     Database& db_;
+    beast::flat_buffer buffer_;
+    http::request<http::string_body> request_;
 };

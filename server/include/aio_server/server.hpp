@@ -5,7 +5,7 @@
 class Server {
 public:
     Server(boost::asio::io_context& ioc, unsigned short port);
-    void run();
+    void start_accepting();
 private:
     void do_accept();
 

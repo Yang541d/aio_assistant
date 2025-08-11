@@ -1,104 +1,65 @@
-#include "aio_server/session.hpp" 
+#include "aio_server/session.hpp"
 #include <iostream>
 #include <utility>
-#include <istream>
-using json = nlohmann::json;
-// 构造函数的实现
-Session::Session(boost::asio::ip::tcp::socket socket, Database& db)
-    : socket_(std::move(socket)),
-      db_(db) { // 初始化db_成员
+#include <thread> // 为了打印线程ID
+
+Session::Session(net::ip::tcp::socket&& socket, Database& db)
+    : stream_(std::move(socket)),
+      db_(db) {
 }
+
 void Session::start() {
-    std::cout << "会话开始，准备从客户端读取数据..." << std::endl;
     do_read();
 }
 
 void Session::do_read() {
+    request_ = {}; // 清空上次的请求
     auto self = shared_from_this();
 
-    boost::asio::async_read_until(socket_, buffer_, '\n',
-        [this, self](const boost::system::error_code& ec, std::size_t length) {
+    http::async_read(stream_, buffer_, request_,
+        [this, self](beast::error_code ec, std::size_t bytes_transferred) {
+            boost::ignore_unused(bytes_transferred);
             if (!ec) {
-                // 从streambuf中提取一行完整的数据
-                std::istream is(&buffer_);
-                std::string line;
-                std::getline(is, line); // getline会自动处理换行符
-
-                // 只在line非空时才尝试解析
-                if (!line.empty()) {
-                    try {
-                        nlohmann::json request = nlohmann::json::parse(line);
-                        std::cout << "成功解析JSON: " << request.dump(4) << std::endl;
-                        handle_request(request);
-                    } catch (const nlohmann::json::parse_error& e) {
-                        std::cerr << "JSON解析错误: " << e.what() << std::endl;
-                    }
-                }
-
-                // 继续准备下一次读取
-                do_read();
-
-            } else {
-                if (ec == boost::asio::error::eof) {
-                     std::cout << "客户端断开连接。" << std::endl;
-                } else {
-                     std::cerr << "读取数据时发生错误: " << ec.message() << std::endl;
-                }
+                handle_request(std::move(request_));
+            } else if (ec != http::error::end_of_stream) {
+                std::cerr << "read error: " << ec.message() << std::endl;
             }
         });
 }
 
-void Session::handle_request(const json& request) {
-    db_.log_client_request(request);
-    // 检查JSON中是否存在"type"字段
-    if (request.contains("type") && request["type"].is_string()) {
-        std::string request_type = request["type"];
+void Session::handle_request(http::request<http::string_body>&& req) {
+    std::cout << "[线程 " << std::this_thread::get_id() << "] 收到HTTP请求: "
+              << req.method_string() << " " << req.target() << std::endl;
 
-        // handle_spider_request
-         if (request_type == "crawl_scholar") {
-            if (request.contains("payload") && request["payload"].contains("name")) {
-                std::string name = request["payload"]["name"];
-                std::cout << "收到爬取任务，目标: " << name << ". 开始调用Python服务..." << std::endl;
+    // 在这里，我们将实现API路由
+    // 目前，我们只返回一个简单的“OK”响应
 
-                // 发起HTTP GET请求到我们的Python服务
-                cpr::Response r = cpr::Get(cpr::Url{"http://127.0.0.1:5001/crawl"},
-                                           cpr::Parameters{{"name", name}});
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.set(http::field::server, "AioServer/1.0");
+    res.set(http::field::content_type, "application/json");
+    res.keep_alive(req.keep_alive());
 
-                std::cout << "Python服务调用完成，返回状态码: " << r.status_code << std::endl;
-                if (r.status_code == 200) {
-                    std::cout << "爬取结果: " << r.text << std::endl;
-                    // TODO: 将r.text(一个JSON字符串)解析并存入数据库
-                } else {
-                    std::cout << "爬虫服务调用失败: " << r.error.message << std::endl;
-                }
-            }
-        } 
+    nlohmann::json res_body;
+    res_body["status"] = "ok";
+    res_body["message"] = "Request received";
+    res.body() = res_body.dump(4);
 
-        if (request_type == "echo") {
-            std::cout << "收到一个echo请求。" << std::endl;
-            // 在这里我们可以实现一个JSON版本的echo，但暂时先只打印
-        } else if (request_type == "login") {
-            if (request.contains("payload") && request["payload"].is_object()) {
-                auto payload = request["payload"];
-                if (payload.contains("user")) {
-                    std::string user = payload["user"];
-                    std::cout << "收到来自用户 " << user << " 的登录请求。" << std::endl;
-                }
-            }
-        } else {
-            std::cout << "收到未知类型的请求: " << request_type << std::endl;
-        }
-    }
+    res.prepare_payload();
+    send_response(std::move(res));
 }
 
-// void Session::do_write(std::size_t length) {
-//     auto self = shared_from_this();
-//     boost::asio::async_write(socket_, boost::asio::buffer(buffer_, length),
-//         [this, self](const boost::system::error_code& ec, std::size_t /*length*/) {
-//             if (!ec) {
-//                 do_read();
-//             } else {
-//                 std::cerr << "写回数据时发生错误: " << ec.message() << std::endl;
-//             }
-//         });
-// }
+void Session::send_response(http::response<http::string_body>&& res) {
+    auto self = shared_from_this();
+    auto res_ptr = std::make_shared<http::response<http::string_body>>(std::move(res));
+
+    http::async_write(stream_, *res_ptr,
+        [this, self, res_ptr](beast::error_code ec, std::size_t bytes_transferred) {
+            boost::ignore_unused(bytes_transferred);
+            if (ec) {
+                std::cerr << "write error: " << ec.message() << std::endl;
+            }
+            // 简单处理，发送完响应就关闭连接
+            beast::error_code close_ec;
+            stream_.socket().shutdown(net::ip::tcp::socket::shutdown_send, close_ec);
+        });
+}
