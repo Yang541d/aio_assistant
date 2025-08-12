@@ -1,6 +1,7 @@
 # scraper_service/config.py
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 # 加载 .env（放在 scraper_service/.env）
 load_dotenv()
@@ -22,4 +23,6 @@ DEFAULT_AVATAR_URL = os.getenv(
     "https://static.aminer.cn/default/default.jpg"
 )
 
-DATA_DIR = os.getenv("DATA_DIR", "./data")  # 下载文件保存路径
+# 优先环境变量 SCRAPER_DATA_DIR，其次 ./data
+DATA_DIR = Path(os.getenv("SCRAPER_DATA_DIR", "./data")).resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)

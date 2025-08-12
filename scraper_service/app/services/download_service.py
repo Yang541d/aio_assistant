@@ -90,6 +90,11 @@ class DownloadService:
         out_dir: str,
         prefer_pdf: bool,
         save_html_fallback: bool,
+        person_id: str,                     
+        paper_id: str,                      
+        paper_title: Optional[str],         
+        paper_year: Optional[int],          
+        source_urls: Optional[List[str]],   
         timeout: float = 20.0,
     ) -> tuple[str, str, int, Optional[str]]:
         """
@@ -139,15 +144,34 @@ class DownloadService:
                             size += len(chunk)
 
             # 落地 meta.json
-            meta = {
-                "source_url": url,
-                "request_url": request_url,
-                "final_url": final_url,
-                "content_type": ("application/pdf" if is_pdf else (ctype or "text/html")),
-                "saved_file": fname,
-                "size_bytes": size,
-                "sha256": h.hexdigest(),
-            }
+            # 在 _download_one(...) 里，成功写文件后：
+                meta = {
+                    "schema_version": 1,
+                    "person_id": person_id,            # 从上层调用处传入（若不想改签名，也可以在 plan_or_download 里写入）
+                    "paper_id": paper_id,              # 同上
+                    "title": paper_title or "",
+                    "year": paper_year,
+
+                    "source_urls": source_urls or [],
+                    "chosen_url": url,
+                    "final_url": final_url,
+
+                    "content_type": ctype or ("application/pdf" if is_pdf else "text/html"),
+                    "saved_file": fname,
+                    "size_bytes": size,
+                    "sha256": h.hexdigest(),
+                    "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+
+                    "html_fallback": (not is_pdf),
+                    "prefer_pdf": prefer_pdf,
+                    "http_status": r.status_code,
+                    "http_headers": {
+                        k.lower(): v
+                        for k, v in r.headers.items()
+                        if k.lower() in ("content-type", "etag", "last-modified", "content-length")
+                    }
+                }
+
             with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as mf:
                 json.dump(meta, mf, ensure_ascii=False, indent=2)
 
@@ -208,6 +232,11 @@ class DownloadService:
                 out_dir=out_dir,
                 prefer_pdf=req.prefer_pdf,
                 save_html_fallback=req.save_html_fallback,
+                person_id=person_id,
+                paper_id=p.id or _safe_slug(p.title) or "unknown_paper",
+                paper_title=p.title,
+                paper_year=p.year,
+                source_urls=p.urls or [],
             )
             if status == "DOWNLOADED":
                 saved += 1
