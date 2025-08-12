@@ -2,6 +2,7 @@
 #include <iostream>
 #include <utility>
 #include <thread> // 为了打印线程ID
+#include <cpr/cpr.h>
 
 Session::Session(net::ip::tcp::socket&& socket, Database& db)
     : stream_(std::move(socket)),
@@ -27,42 +28,52 @@ void Session::do_read() {
         });
 }
 
-// 在 src/session.cpp 中
 void Session::handle_request(http::request<http::string_body>&& req) {
     std::cout << "[线程 " << std::this_thread::get_id() << "] 收到HTTP请求: "
               << req.method_string() << " " << req.target() << std::endl;
 
-    // --- API 路由开始 ---
-
-    // 检查请求方法是否是 POST，并且请求路径(target)是否是 "/api/search"
     if (req.method() == http::verb::post && req.target() == "/api/search") {
-
-        // 这是一个学者搜索请求，我们来处理它
         try {
-            // 1. 解析请求体中的JSON
             nlohmann::json body_json = nlohmann::json::parse(req.body());
-
-            // 2. 验证JSON中是否包含必须的 "name" 字段
             if (body_json.contains("name")) {
                 std::string scholar_name = body_json["name"];
                 std::cout << "API(/api/search): 收到搜索请求，学者姓名: " << scholar_name << std::endl;
 
-                // TODO: 在这里创建任务，启动后台线程调用爬虫...
+                // ⭐核心改动：启动后台任务，并立即响应客户端⭐
+                std::thread([this, scholar_name] {
+                    std::cout << "[后台线程 " << std::this_thread::get_id() << "] 开始为 " << scholar_name << " 执行爬取任务..." << std::endl;
 
-                // 3. 准备一个“202 Accepted”响应，表示任务已接受，正在后台处理
+                    // 1. 调用Python爬虫服务 (这是阻塞操作)
+                    cpr::Response r = cpr::Get(cpr::Url{"http://127.0.0.1:5001/crawl"}, cpr::Parameters{{"name", scholar_name}});
+
+                    if (r.status_code == 200) {
+                        try {
+                            // 2. 解析爬虫返回的JSON结果
+                            nlohmann::json crawl_result = nlohmann::json::parse(r.text);
+
+                            // 3. 将结果写入数据库
+                            if (crawl_result.contains("publications") && crawl_result["publications"].is_array()) {
+                                db_.save_scholar_publications(scholar_name, crawl_result["publications"]);
+                            }
+                        } catch (const nlohmann::json::parse_error& e) {
+                            std::cerr << "[后台线程 " << std::this_thread::get_id() << "] 解析爬虫结果时出错: " << e.what() << std::endl;
+                        }
+                    } else {
+                        std::cerr << "[后台线程 " << std::this_thread::get_id() << "] 爬虫服务调用失败，状态码: " << r.status_code << std::endl;
+                    }
+                }).detach();
+
+                // 立即发送“202 Accepted”响应
                 http::response<http::string_body> res{http::status::accepted, req.version()};
-                res.set(http::field::server, "AioServer/1.0");
                 res.set(http::field::content_type, "application/json");
-
                 nlohmann::json res_body;
                 res_body["status"] = "pending";
                 res_body["message"] = "Search task has been accepted for scholar: " + scholar_name;
-                res_body["task_id"] = "temp-task-id-12345"; // 暂时用一个假的ID
-                res.body() = res_body.dump(4); // dump(4)是格式化输出
-
+                res_body["task_id"] = "temp-task-id-12345";
+                res.body() = res_body.dump(4);
                 res.prepare_payload();
                 send_response(std::move(res));
-                return; // 处理完毕，直接返回，不再执行后续代码
+                return; 
             }
         } catch (const nlohmann::json::parse_error& e) {
             // 如果JSON解析失败，返回一个“400 Bad Request”客户端错误响应

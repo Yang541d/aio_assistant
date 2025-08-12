@@ -27,6 +27,14 @@ Database::Database(const std::string& db_path) {
         "request_type TEXT,"
         "payload_json TEXT"
         ")");
+
+        // 创建学者论文表
+        db_->exec("CREATE TABLE IF NOT EXISTS scholar_publications ("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                  "scholar_name TEXT NOT NULL,"
+                  "publication_title TEXT NOT NULL,"
+                  "publication_year INTEGER"
+                  ")");
 } catch (const std::exception& e) {
         std::cerr << "数据库初始化错误: " << e.what() << std::endl;
         // 在实际项目中，这里应该抛出异常或处理错误
@@ -86,4 +94,26 @@ void Database::log_client_request(const nlohmann::json& request) {
         std::cerr << "[ERROR] 在 log_client_request 中捕获到异常: " << e.what() << std::endl;
     }
     std::cout << "[DEBUG] <== 退出 log_client_request 函数" << std::endl;
+}
+
+// 实现保存学者论文信息的方法
+void Database::save_scholar_publications(const std::string& scholar_name, const nlohmann::json& publications) {
+    try {
+        SQLite::Transaction transaction(*db_);
+        SQLite::Statement query(*db_, "INSERT INTO scholar_publications (scholar_name, publication_title, publication_year) VALUES (?, ?, ?)");
+
+        for (const auto& pub : publications) {
+            query.bind(1, scholar_name);
+            query.bind(2, pub.value("title", ""));
+            query.bind(3, pub.value("year", 0));
+            query.exec();
+            query.reset();
+        }
+
+        transaction.commit();
+        std::cout << "[数据库] 成功为 " << scholar_name << " 保存了 " << publications.size() << " 条出版物记录。" << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "保存学者信息时发生错误: " << e.what() << std::endl;
+    }
 }
