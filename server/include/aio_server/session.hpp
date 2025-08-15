@@ -1,28 +1,29 @@
 #pragma once
-
-#include "aio_server/database.hpp"
 #include <boost/asio.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
 #include <memory>
+#include <vector>
 #include <nlohmann/json.hpp>
-
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace net = boost::asio;
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(net::ip::tcp::socket&& socket, Database& db);
+    Session(boost::asio::ip::tcp::socket socket);
     void start();
 
 private:
-    void do_read();
-    void handle_request(http::request<http::string_body>&& req);
-    void send_response(http::response<http::string_body>&& res);
+    // 新的读写流程
+    void do_read_header();
+    void do_read_body();
+    void handle_message();
+    void do_write(nlohmann::json response_json);
 
-    beast::tcp_stream stream_;
-    Database& db_;
-    beast::flat_buffer buffer_;
-    http::request<http::string_body> request_;
+    boost::asio::ip::tcp::socket socket_;
+    
+    // 用于读取消息头的缓冲区 (固定4字节)
+    std::array<char, 4> header_buffer_;
+    
+    // 用于读取消息体的动态缓冲区
+    std::vector<char> body_buffer_;
+
+    // 存储从消息头解析出的消息体长度
+    uint32_t incoming_body_length_ = 0;
 };

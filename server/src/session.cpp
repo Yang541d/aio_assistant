@@ -1,132 +1,126 @@
 #include "aio_server/session.hpp"
+#include "aio_server/document_processor.hpp" // ⭐新增⭐
 #include <iostream>
 #include <utility>
 #include <thread>
-#include <cpr/cpr.h>
+#include <chrono>
+#include <nlohmann/json.hpp>
 
-Session::Session(net::ip::tcp::socket&& socket, Database& db)
-    : stream_(std::move(socket)),
-      db_(db) {
-}
+Session::Session(boost::asio::ip::tcp::socket socket)
+    : socket_(std::move(socket))
+{}
 
 void Session::start() {
-    do_read();
+    do_read_header();
 }
 
-void Session::do_read() {
-    request_ = {}; // 清空上次的请求
+void Session::do_read_header() {
     auto self = shared_from_this();
-
-    http::async_read(stream_, buffer_, request_,
-        [this, self](beast::error_code ec, std::size_t bytes_transferred) {
-            boost::ignore_unused(bytes_transferred);
+    boost::asio::async_read(socket_, boost::asio::buffer(header_buffer_),
+        [this, self](boost::system::error_code ec, std::size_t /*length*/) {
             if (!ec) {
-                // 将收到的请求移交给 handle_request 处理
-                handle_request(std::move(request_));
-            } else if (ec != http::error::end_of_stream) {
-                std::cerr << "read error: " << ec.message() << std::endl;
+                const char* data = header_buffer_.data();
+                incoming_body_length_ = 
+                    (static_cast<uint32_t>(static_cast<uint8_t>(data[0])) << 24) |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(data[1])) << 16) |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(data[2])) << 8)  |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(data[3])));
+                
+                if (incoming_body_length_ > 0 && incoming_body_length_ < (1024 * 1024)) {
+                    do_read_body();
+                } else {
+                    std::cerr << "收到了一个无效的消息长度: " << incoming_body_length_ << std::endl;
+                    do_read_header();
+                }
+            } else if (ec != boost::asio::error::eof) {
+                std::cerr << "读取消息头错误: " << ec.message() << std::endl;
             }
-            // 当客户端主动断开连接时，会收到 end_of_stream 错误，此时会话自然结束
         });
 }
 
-void Session::handle_request(http::request<http::string_body>&& req) {
-    std::cout << "[线程 " << std::this_thread::get_id() << "] 收到HTTP请求: "
-              << req.method_string() << " " << req.target() << std::endl;
+void Session::do_read_body() {
+    body_buffer_.resize(incoming_body_length_);
+    auto self = shared_from_this();
 
-    // --- API 路由 ---
-    if (req.method() == http::verb::post && req.target() == "/api/search") {
-        try {
-            nlohmann::json body_json = nlohmann::json::parse(req.body());
-            if (!body_json.contains("name")) {
-                // 如果缺少'name'字段，返回400错误
-                http::response<http::string_body> res{http::status::bad_request, req.version()};
-                res.set(http::field::content_type, "text/plain");
-                res.body() = "Missing 'name' field in request body.";
-                res.prepare_payload();
-                send_response(std::move(res));
-                return;
+    boost::asio::async_read(socket_, boost::asio::buffer(body_buffer_),
+        [this, self](boost::system::error_code ec, std::size_t /*length*/) {
+            if (!ec) {
+                handle_message();
+            } else if (ec != boost::asio::error::eof) {
+                std::cerr << "读取消息体错误: " << ec.message() << std::endl;
             }
-
-            // 1. 在数据库中创建任务
-            std::string task_id = db_.create_task("SEARCH", body_json);
-            if (task_id.empty()) {
-                // 如果任务创建失败，返回500服务器内部错误
-                http::response<http::string_body> res{http::status::internal_server_error, req.version()};
-                res.set(http::field::content_type, "text/plain");
-                res.body() = "Failed to create a new task in database.";
-                res.prepare_payload();
-                send_response(std::move(res));
-                return;
-            }
-            
-            // 2. 启动后台线程执行长耗时任务
-            std::thread([this, task_id, body_json] {
-                db_.update_task_status(task_id, "RUNNING");
-                std::cout << "[后台线程 " << std::this_thread::get_id() << "] 任务 " << task_id << " 开始执行..." << std::endl;
-                
-                try {
-                    // 调用Python的 /search/scholars 接口
-                    cpr::Response r = cpr::Post(cpr::Url{"http://127.0.0.1:8000/search/scholars"},
-                                                cpr::Body{body_json.dump()},
-                                                cpr::Header{{"Content-Type", "application/json"}});
-                    
-                    if (r.status_code == 200) {
-                        nlohmann::json crawl_result = nlohmann::json::parse(r.text);
-                        if (crawl_result.contains("items")) {
-                            db_.save_scholar_candidates(task_id, crawl_result["items"]);
-                            db_.update_task_status(task_id, "COMPLETED");
-                        }
-                    } else {
-                        db_.update_task_status(task_id, "FAILED");
-                        std::cerr << "[后台线程] 爬虫服务调用失败，任务 " << task_id << "，状态码: " << r.status_code << std::endl;
-                    }
-                } catch (const std::exception& e) {
-                    db_.update_task_status(task_id, "FAILED");
-                    std::cerr << "[后台线程] 任务 " << task_id << " 执行时发生异常: " << e.what() << std::endl;
-                }
-            }).detach();
-
-            // 3. 立即向客户端返回“202 Accepted”响应
-            http::response<http::string_body> res{http::status::accepted, req.version()};
-            res.set(http::field::content_type, "application/json");
-            nlohmann::json res_body;
-            res_body["task_id"] = task_id;
-            res_body["status"] = "PENDING";
-            res_body["message"] = "Search task has been initiated.";
-            res.body() = res_body.dump(4);
-            res.prepare_payload();
-            send_response(std::move(res));
-            return; 
-        } catch (const nlohmann::json::parse_error& e) {
-             http::response<http::string_body> res{http::status::bad_request, req.version()};
-             res.set(http::field::content_type, "text/plain");
-             res.body() = "Invalid JSON format in request body.";
-             res.prepare_payload();
-             send_response(std::move(res));
-             return;
-        }
-    }
-    
-    // 如果没有任何路由匹配，则返回404 Not Found
-    http::response<http::string_body> res{http::status::not_found, req.version()};
-    res.set(http::field::content_type, "text/plain");
-    res.body() = "The resource '" + std::string(req.target()) + "' was not found.";
-    res.prepare_payload();
-    send_response(std::move(res));
+        });
 }
 
-void Session::send_response(http::response<http::string_body>&& res) {
-    auto self = shared_from_this();
-    auto res_ptr = std::make_shared<http::response<http::string_body>>(std::move(res));
+void Session::handle_message() {
+    try {
+        nlohmann::json request_json = nlohmann::json::parse(body_buffer_);
+        std::cout << "[线程 " << std::this_thread::get_id() << "] 成功解析JSON: " 
+                  << request_json.dump(4) << std::endl;
 
-    http::async_write(stream_, *res_ptr,
-        [this, self, res_ptr](beast::error_code ec, std::size_t bytes_transferred) {
-            boost::ignore_unused(bytes_transferred);
-            if (ec) {
-                std::cerr << "write error: " << ec.message() << std::endl;
+        nlohmann::json response_json;
+
+        if (request_json.contains("command") && request_json["command"].is_string()) {
+            std::string command = request_json["command"];
+
+            if (command == "index_document") {
+                if (request_json.contains("payload") && request_json["payload"].is_object() &&
+                    request_json["payload"].contains("path") && request_json["payload"]["path"].is_string()) {
+                    
+                    std::string doc_path = request_json["payload"]["path"];
+                    std::cout << "[I/O线程] 收到索引文档请求: " << doc_path << "。准备分派任务..." << std::endl;
+                    
+                    // ⭐ 核心改动：创建处理器并启动后台任务 ⭐
+                    auto processor = std::make_shared<DocumentProcessor>(doc_path);
+                    std::thread([processor] {
+                        processor->process();
+                    }).detach();
+
+                    response_json["status"] = "task_received";
+                    response_json["message"] = "Indexing task for '" + doc_path + "' has been accepted.";
+                } else {
+                    response_json["status"] = "error";
+                    response_json["message"] = "Invalid payload for 'index_document' command.";
+                }
+            } else {
+                response_json["status"] = "error";
+                response_json["message"] = "Unknown command: " + command;
             }
-            beast::error_code close_ec;
-            stream_.socket().shutdown(net::ip::tcp::socket::shutdown_send, close_ec);
+        } else {
+            response_json["status"] = "error";
+            response_json["message"] = "Invalid request: 'command' field is missing or not a string.";
+        }
+
+        do_write(response_json);
+
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "JSON解析错误: " << e.what() << std::endl;
+        do_read_header();
+    }
+}
+
+void Session::do_write(nlohmann::json response_json) {
+    auto self = shared_from_this();
+    
+    std::string response_body_str = response_json.dump();
+    uint32_t body_length = response_body_str.length();
+
+    auto write_buffer_ptr = std::make_shared<std::vector<char>>();
+    write_buffer_ptr->resize(4 + body_length);
+
+    (*write_buffer_ptr)[0] = (body_length >> 24) & 0xFF;
+    (*write_buffer_ptr)[1] = (body_length >> 16) & 0xFF;
+    (*write_buffer_ptr)[2] = (body_length >> 8) & 0xFF;
+    (*write_buffer_ptr)[3] = body_length & 0xFF;
+
+    std::copy(response_body_str.begin(), response_body_str.end(), write_buffer_ptr->begin() + 4);
+
+    boost::asio::async_write(socket_, boost::asio::buffer(*write_buffer_ptr),
+        [this, self, write_buffer_ptr](boost::system::error_code ec, std::size_t /*length*/) {
+            if (!ec) {
+                do_read_header();
+            } else if (ec != boost::asio::error::eof) {
+                std::cerr << "写入错误: " << ec.message() << std::endl;
+            }
         });
 }

@@ -2,32 +2,30 @@
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <boost/asio.hpp>
-
-namespace net = boost::asio;
+#include <boost/asio.hpp> 
 
 int main() {
     try {
         unsigned short const port = 8080;
-        auto const threads = 8;
+        auto const threads = std::thread::hardware_concurrency();
 
-        net::io_context ioc{threads};
+        boost::asio::io_context ioc{static_cast<int>(threads)};
 
-        std::cout << "主服务器(server_app)启动，监听端口 " << port 
+        std::cout << "V1服务器启动，监听端口 " << port 
                   << "，使用 " << threads << " 个工作线程..." << std::endl;
-
+        
         Server server(ioc, port);
-        server.start_accepting();
-
+        server.start();
+        
         std::vector<std::thread> thread_pool;
         thread_pool.reserve(threads);
 
-        for (int i = 0; i < threads; ++i) {
+        for (unsigned int i = 0; i < threads; ++i) {
             thread_pool.emplace_back([&ioc] {
                 ioc.run();
             });
         }
-
+        
         for (auto& t : thread_pool) {
             if (t.joinable()) {
                 t.join();
